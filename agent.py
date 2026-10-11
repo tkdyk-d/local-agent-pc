@@ -3,7 +3,7 @@ Tiny local AI agent — runs 100% on your PC with Ollama. No tokens, no internet
 
 Setup (once):
   curl -fsSL https://ollama.com/install.sh | sh
-  ollama pull qwen3:4b
+  ollama pull llama3.2
   python3 -m venv ~/agent-env
   source ~/agent-env/bin/activate
   pip install ollama
@@ -13,14 +13,16 @@ Run:
   python agent.py
 
 Try asking: "what time is it?", "what files are in my home folder?",
-"read ~/notes.txt and summarize it". Type "quit" to exit.
+"is 8.8.8.8 reachable?", "is port 22 open on localhost?". Type "quit" to exit.
 """
 import datetime
 import os
+import socket
+import subprocess
 
 import ollama
 
-MODEL = "llama3.2"  # small enough for a 4GB GPU like the GTX 970
+MODEL = "llama3.2"  # ~2GB, fits fully on a 4GB GPU like the GTX 970
 
 
 # ---- Tools: plain Python functions the agent can choose to call ----
@@ -56,14 +58,48 @@ def read_file(path: str) -> str:
         return f"Error: {e}"
 
 
-TOOLS = {fn.__name__: fn for fn in (get_time, list_files, read_file)}
+def ping_host(host: str) -> str:
+    """Check whether a host is reachable on the network by pinging it once.
+
+    Args:
+        host: a hostname or IP address, e.g. "8.8.8.8" or "localhost"
+    """
+    # Only scan machines you own or have permission to test.
+    try:
+        result = subprocess.run(
+            ["ping", "-c", "1", "-W", "2", host],  # 1 packet, 2-second timeout
+            capture_output=True, text=True, timeout=5,
+        )
+        return f"{host} is UP" if result.returncode == 0 else f"{host} is DOWN or not responding"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def check_port(host: str, port: int) -> str:
+    """Check whether a single TCP port is open on a host.
+
+    Args:
+        host: a hostname or IP address, e.g. "localhost"
+        port: the port number, e.g. 22 for SSH or 80 for HTTP
+    """
+    # Only scan machines you own or have permission to test.
+    try:
+        with socket.create_connection((host, int(port)), timeout=2):
+            return f"Port {port} on {host} is OPEN"
+    except (ConnectionRefusedError, socket.timeout, OSError):
+        return f"Port {port} on {host} is CLOSED or filtered"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+TOOLS = {fn.__name__: fn for fn in (get_time, list_files, read_file, ping_host, check_port)}
 
 # ---- The agent loop: think -> use a tool -> look at result -> repeat ----
 
 messages = [{
     "role": "system",
-    "content": "You are a helpful local assistant. Use your tools when they "
-               "help answer the question. Keep answers short.",
+    "content": "You are a helpful local assistant. When a tool can answer the "
+               "question, call it instead of describing it. Keep answers short.",
 }]
 
 print(f"Local agent running on {MODEL}. Type 'quit' to exit.")
